@@ -16,12 +16,17 @@ could deliver: the blame game ends exactly where it started.
 Layout of this program
 ----------------------
 * :data:`ENTRY` -- the single line being entered, kept verbatim.
-* :func:`validate_entry` -- gate checks, one small check per helper,
-  so a failing rule names itself in the error message.
+* Small ``check_*`` helpers -- one gate check each, so a failing
+  rule names itself in the error message.
+* :data:`CHECKS` -- the checks in the order they run; adding a rule
+  means writing one helper and one line here.
+* :func:`validate_entry` -- runs :data:`CHECKS` in order.
 * :func:`resolve_output_path` -- where the file goes, honouring the
   ``MAKEFUN_OUTPUT_DIR`` override used by the harness.
 * :func:`write_entry` / :func:`verify_written` -- write the file,
   then read it back and prove it matches, byte for byte.
+* :func:`entry_stats` -- the character/word counts :func:`main`
+  reports, so the report and the validation agree on the numbers.
 * :func:`main` -- glue: validate, write, verify, report.
 """
 
@@ -52,16 +57,22 @@ def check_single_line(entry: str) -> None:
 def check_length(entry: str) -> None:
     """Enforce the competition's character gate, 1-200 chars."""
     if len(entry) < MIN_CHARS:
-        raise ValueError(f"entry is empty, need at least {MIN_CHARS} char")
+        raise ValueError(
+            f"entry is {len(entry)} chars, need at least {MIN_CHARS}"
+        )
     if len(entry) > MAX_CHARS:
         raise ValueError(
             f"entry is {len(entry)} chars, over the {MAX_CHARS} limit"
         )
 
 
-def check_text_safe(entry: str) -> None:
-    """Reject control characters and confirm the text is valid UTF-8."""
+def check_valid_utf8(entry: str) -> None:
+    """Confirm the text is valid UTF-8 before anything else reads it."""
     entry.encode("utf-8")  # raises UnicodeEncodeError if not valid UTF-8
+
+
+def check_no_control_chars(entry: str) -> None:
+    """Reject control characters, naming each one found."""
     bad = [c for c in entry if ord(c) < 0x20 and c not in ("\t",)]
     if bad:
         raise ValueError(
@@ -74,6 +85,12 @@ def check_no_edge_whitespace(entry: str) -> None:
     """Reject leading/trailing spaces that would be invisible in output."""
     if entry != entry.strip():
         raise ValueError("entry must not start or end with whitespace")
+
+
+def check_no_double_space(entry: str) -> None:
+    """Reject doubled spaces: invisible in a commit log, sloppy on sight."""
+    if "  " in entry:
+        raise ValueError("entry must not contain two spaces in a row")
 
 
 def check_word_count(entry: str) -> None:
@@ -94,20 +111,33 @@ def check_commit_shape(entry: str) -> None:
         raise ValueError('entry must start with the "fix: " prefix')
 
 
+CHECKS = (
+    check_not_empty,
+    check_single_line,
+    check_no_edge_whitespace,
+    check_length,
+    check_valid_utf8,
+    check_no_control_chars,
+    check_no_double_space,
+    check_word_count,
+    check_commit_shape,
+)
+
+
 def validate_entry(entry: str) -> None:
-    """Run every gate check; raise ValueError naming the first failure."""
-    check_not_empty(entry)
-    check_single_line(entry)
-    check_no_edge_whitespace(entry)
-    check_length(entry)
-    check_text_safe(entry)
-    check_word_count(entry)
-    check_commit_shape(entry)
+    """Run every gate check in order; raise naming the first failure."""
+    for check in CHECKS:
+        check(entry)
+
+
+def entry_stats(entry: str) -> tuple[int, int]:
+    """Return the (character, word) counts reported after a write."""
+    return len(entry), len(entry.split())
 
 
 def resolve_output_path() -> str:
     """Return the path of the file to write, creating its directory."""
-    output_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+    output_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
     os.makedirs(output_dir, exist_ok=True)
     return os.path.join(output_dir, "entry.txt")
 
@@ -133,10 +163,8 @@ def main() -> int:
     output_path = resolve_output_path()
     write_entry(ENTRY, output_path)
     verify_written(ENTRY, output_path)
-    words = len(ENTRY.split())
-    print(
-        f"wrote {len(ENTRY)} chars ({words} words) to {output_path}"
-    )
+    chars, words = entry_stats(ENTRY)
+    print(f"wrote {chars} chars ({words} words) to {output_path}")
     return 0
 
 
